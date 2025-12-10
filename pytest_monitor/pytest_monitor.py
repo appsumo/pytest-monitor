@@ -188,50 +188,44 @@ def pytest_runtest_call(item):
         setattr(item, "monitor_skip_test", True)
 
 
-@pytest.hookimpl
+@pytest.hookimpl(hookwrapper=True)
 def pytest_pyfunc_call(pyfuncitem):
     """
-    Core sniffer logic. We encapsulate the test function in a sniffer function to collect
-    memory results.
+    Core sniffer logic. We use hookwrapper to measure memory around the actual test execution,
+    regardless of which plugin actually runs the test.
     """
-    sys.stderr.write(f"[pytest-monitor] pytest_pyfunc_call ENTERED: {pyfuncitem.name}\n")
+    sys.stderr.write(f"[pytest-monitor] pytest_pyfunc_call WRAPPER ENTERED: {pyfuncitem.name}\n")
     sys.stderr.flush()
-
-    def wrapped_function():
-        try:
-            funcargs = pyfuncitem.funcargs
-            testargs = {arg: funcargs[arg] for arg in pyfuncitem._fixtureinfo.argnames}
-            pyfuncitem.obj(**testargs)
-        except Exception:
-            raise
-        except BaseException as e:
-            return e
-
-    def prof():
-        sys.stderr.write(f"[pytest-monitor] prof() starting for: {pyfuncitem.name}\n")
-        sys.stderr.flush()
-        m = memory_profiler.memory_usage((wrapped_function, ()), max_iterations=1, max_usage=True, retval=True)
-        sys.stderr.write(f"[pytest-monitor] memory_usage returned: {m}\n")
-        sys.stderr.flush()
-        if isinstance(m[1], BaseException):  # Do we have any outcome?
-            raise m[1]
-        memuse = m[0][0] if type(m[0]) is list else m[0]
-        setattr(pyfuncitem, "mem_usage", memuse)
-        setattr(pyfuncitem, "monitor_results", True)
-        sys.stderr.write(f"[pytest-monitor] monitor_results set to True for: {pyfuncitem.name}\n")
-        sys.stderr.flush()
 
     if not PYTEST_MONITORING_ENABLED:
-        sys.stderr.write(f"[pytest-monitor] MONITORING DISABLED, calling wrapped_function directly\n")
+        sys.stderr.write(f"[pytest-monitor] MONITORING DISABLED, yielding to actual test\n")
         sys.stderr.flush()
-        wrapped_function()
-    else:
-        if not pyfuncitem.session.config.option.mtr_disable_gc:
-            gc.collect()
-        prof()
-    sys.stderr.write(f"[pytest-monitor] pytest_pyfunc_call EXITING: {pyfuncitem.name}\n")
+        yield
+        return
+
+    # Collect garbage before measuring
+    if not pyfuncitem.session.config.option.mtr_disable_gc:
+        gc.collect()
+
+    # Measure memory before
+    mem_before = memory_profiler.memory_usage(-1, interval=0.1, max_usage=True)
+    sys.stderr.write(f"[pytest-monitor] mem_before: {mem_before}\n")
     sys.stderr.flush()
-    return True
+
+    # Let the actual test run (by another hook or pytest itself)
+    yield
+
+    # Measure memory after
+    mem_after = memory_profiler.memory_usage(-1, interval=0.1, max_usage=True)
+    sys.stderr.write(f"[pytest-monitor] mem_after: {mem_after}\n")
+    sys.stderr.flush()
+
+    # Use the max of before/after as the memory usage
+    memuse = max(mem_before, mem_after) if isinstance(mem_before, (int, float)) else max(mem_before[0], mem_after[0]) if isinstance(mem_before, list) else mem_after
+    setattr(pyfuncitem, "mem_usage", memuse)
+    setattr(pyfuncitem, "monitor_results", True)
+    sys.stderr.write(f"[pytest-monitor] monitor_results set to True, mem_usage={memuse} for: {pyfuncitem.name}\n")
+    sys.stderr.flush()
 
 
 def pytest_make_parametrize_id(config, val, argname):
