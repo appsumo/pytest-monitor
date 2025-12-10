@@ -295,7 +295,11 @@ def _prf_tracer(request):
         ptimes_a = request.session.pytest_monitor.process.cpu_times()
         yield
         ptimes_b = request.session.pytest_monitor.process.cpu_times()
-        if not request.node.monitor_skip_test and getattr(request.node, "monitor_results", False):
+        monitor_skip = getattr(request.node, "monitor_skip_test", True)
+        monitor_results = getattr(request.node, "monitor_results", False)
+        if monitor_skip or not monitor_results:
+            print(f"[pytest-monitor] FUNCTION SKIPPED: {request.node.name} (skip={monitor_skip}, results={monitor_results})", flush=True)
+        if not monitor_skip and monitor_results:
             item_name = request.node.originalname or request.node.name
             item_loc = getattr(request.node, PYTEST_MONITOR_ITEM_LOC_MEMBER)[0]
             request.session.pytest_monitor.add_test_info(
