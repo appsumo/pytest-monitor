@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import gc
+import sys
 import time
 import warnings
 
@@ -193,7 +194,8 @@ def pytest_pyfunc_call(pyfuncitem):
     Core sniffer logic. We encapsulate the test function in a sniffer function to collect
     memory results.
     """
-    print(f"[pytest-monitor] pytest_pyfunc_call ENTERED: {pyfuncitem.name}", flush=True)
+    sys.stderr.write(f"[pytest-monitor] pytest_pyfunc_call ENTERED: {pyfuncitem.name}\n")
+    sys.stderr.flush()
 
     def wrapped_function():
         try:
@@ -206,24 +208,29 @@ def pytest_pyfunc_call(pyfuncitem):
             return e
 
     def prof():
-        print(f"[pytest-monitor] prof() starting for: {pyfuncitem.name}", flush=True)
+        sys.stderr.write(f"[pytest-monitor] prof() starting for: {pyfuncitem.name}\n")
+        sys.stderr.flush()
         m = memory_profiler.memory_usage((wrapped_function, ()), max_iterations=1, max_usage=True, retval=True)
-        print(f"[pytest-monitor] memory_usage returned: {m}", flush=True)
+        sys.stderr.write(f"[pytest-monitor] memory_usage returned: {m}\n")
+        sys.stderr.flush()
         if isinstance(m[1], BaseException):  # Do we have any outcome?
             raise m[1]
         memuse = m[0][0] if type(m[0]) is list else m[0]
         setattr(pyfuncitem, "mem_usage", memuse)
         setattr(pyfuncitem, "monitor_results", True)
-        print(f"[pytest-monitor] monitor_results set to True for: {pyfuncitem.name}", flush=True)
+        sys.stderr.write(f"[pytest-monitor] monitor_results set to True for: {pyfuncitem.name}\n")
+        sys.stderr.flush()
 
     if not PYTEST_MONITORING_ENABLED:
-        print(f"[pytest-monitor] MONITORING DISABLED, calling wrapped_function directly", flush=True)
+        sys.stderr.write(f"[pytest-monitor] MONITORING DISABLED, calling wrapped_function directly\n")
+        sys.stderr.flush()
         wrapped_function()
     else:
         if not pyfuncitem.session.config.option.mtr_disable_gc:
             gc.collect()
         prof()
-    print(f"[pytest-monitor] pytest_pyfunc_call EXITING: {pyfuncitem.name}", flush=True)
+    sys.stderr.write(f"[pytest-monitor] pytest_pyfunc_call EXITING: {pyfuncitem.name}\n")
+    sys.stderr.flush()
     return True
 
 
