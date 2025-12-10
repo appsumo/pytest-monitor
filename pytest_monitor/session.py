@@ -36,6 +36,7 @@ class PyTestMonitorSession:
         self.__eid = (None, None)
         self.__mem_usage_base = None
         self.__process = psutil.Process(os.getpid())
+        self.__test_order = 0  # Counter for test execution order
 
     @property
     def monitoring_enabled(self):
@@ -52,6 +53,18 @@ class PyTestMonitorSession:
     @property
     def process(self):
         return self.__process
+
+    @property
+    def session_h(self):
+        return self.__session
+
+    @property
+    def test_order(self):
+        return self.__test_order
+
+    def increment_test_order(self):
+        self.__test_order += 1
+        return self.__test_order
 
     def get_env_id(self, env):
         db, remote = None, None
@@ -216,3 +229,46 @@ class PyTestMonitorSession:
                 _log(f"METRIC OK: {item}")
         elif self.__remote and self.remote_env_id is None:
             _log(f"METRIC SKIPPED (no remote_env_id): {item}")
+
+    def add_system_memory_snapshot(self, item_path, item):
+        """
+        Capture and send system-wide memory snapshot after a test.
+        This helps identify memory leaks outside of individual test functions.
+        """
+        if not self.__remote:
+            return
+
+        test_order = self.increment_test_order()
+
+        # Get system memory info
+        vm = psutil.virtual_memory()
+        swap = psutil.swap_memory()
+        proc_mem = self.__process.memory_info()
+
+        recorded_at = datetime.datetime.now().isoformat()
+
+        payload = {
+            "session_h": self.__session,
+            "test_order": test_order,
+            "item_path": item_path,
+            "item": item,
+            "total_memory_mb": vm.total / (1024 ** 2),
+            "available_memory_mb": vm.available / (1024 ** 2),
+            "used_memory_mb": vm.used / (1024 ** 2),
+            "memory_percent": vm.percent,
+            "process_rss_mb": proc_mem.rss / (1024 ** 2),
+            "process_vms_mb": proc_mem.vms / (1024 ** 2),
+            "cached_mb": getattr(vm, 'cached', 0) / (1024 ** 2) if hasattr(vm, 'cached') else None,
+            "buffers_mb": getattr(vm, 'buffers', 0) / (1024 ** 2) if hasattr(vm, 'buffers') else None,
+            "swap_used_mb": swap.used / (1024 ** 2),
+            "recorded_at": recorded_at,
+        }
+
+        url = f"{self.__remote}/system-memory/"
+        try:
+            r = requests.post(url, json=payload)
+            if r.status_code != HTTPStatus.CREATED:
+                _log(f"SYSMEM FAILED: {r.status_code} - {r.text[:200] if r.text else 'empty'}")
+            # Don't disable remote on system memory failures - it's optional
+        except Exception as e:
+            _log(f"SYSMEM ERROR: {e}")

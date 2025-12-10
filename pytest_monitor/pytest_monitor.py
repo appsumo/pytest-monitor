@@ -317,3 +317,8 @@ def _prf_tracer(request):
                 ptimes_b.system - ptimes_a.system,
                 request.node.mem_usage,
             )
+            # Capture system memory snapshot after each test
+            request.session.pytest_monitor.add_system_memory_snapshot(
+                request.module.__name__,
+                item_name,
+            )
