@@ -2,6 +2,7 @@ import datetime
 import hashlib
 import json
 import os
+import sys
 import warnings
 from http import HTTPStatus
 
@@ -15,6 +16,11 @@ from pytest_monitor.sys_utils import (
     collect_ci_info,
     determine_scm_revision,
 )
+
+
+def _log(msg):
+    """Log to stdout for debugging in CI environments."""
+    print(f"[pytest-monitor] {msg}", file=sys.stdout, flush=True)
 
 
 class PyTestMonitorSession:
@@ -53,10 +59,14 @@ class PyTestMonitorSession:
             row = self.__db.query("SELECT ENV_H FROM EXECUTION_CONTEXTS WHERE ENV_H= ?", (env.compute_hash(),))
             db = row[0] if row else None
         if self.__remote:
-            r = requests.get(f"{self.__remote}/contexts/{env.compute_hash()}")
+            url = f"{self.__remote}/contexts/{env.compute_hash()}"
+            _log(f"GET {url}")
+            r = requests.get(url)
+            _log(f"GET response: {r.status_code}")
             remote = None
             if r.status_code == HTTPStatus.OK:
                 remote = json.loads(r.text)
+                _log(f"GET response body: {remote}")
                 if remote["contexts"]:
                     remote = remote["contexts"][0]["h"]
                 else:
@@ -90,15 +100,17 @@ class PyTestMonitorSession:
         if self.__db:
             self.__db.insert_session(self.__session, run_date, scm, description)
         if self.__remote:
-            r = requests.post(
-                f"{self.__remote}/sessions/",
-                json={
-                    "session_h": self.__session,
-                    "run_date": run_date,
-                    "scm_ref": scm,
-                    "description": json.loads(description),
-                },
-            )
+            url = f"{self.__remote}/sessions/"
+            payload = {
+                "session_h": self.__session,
+                "run_date": run_date,
+                "scm_ref": scm,
+                "description": json.loads(description),
+            }
+            _log(f"POST {url}")
+            _log(f"POST payload: {payload}")
+            r = requests.post(url, json=payload)
+            _log(f"POST response: {r.status_code} - {r.text[:200] if r.text else 'empty'}")
             if r.status_code != HTTPStatus.CREATED:
                 self.__remote = ""
                 msg = f"Cannot insert session in remote monitor server ({r.status_code})! Deactivating...')"
@@ -107,18 +119,25 @@ class PyTestMonitorSession:
     def set_environment_info(self, env):
         self.__eid = self.get_env_id(env)
         db_id, remote_id = self.__eid
+        _log(f"set_environment_info: db_id={db_id}, remote_id={remote_id}")
         if self.__db and db_id is None:
             self.__db.insert_execution_context(env)
             db_id = self.__db.query("select ENV_H from EXECUTION_CONTEXTS where ENV_H = ?", (env.compute_hash(),))[0]
         if self.__remote and remote_id is None:
-            # We must postpone that to be run at the end of the pytest session.
-            r = requests.post(f"{self.__remote}/contexts/", json=env.to_dict())
+            url = f"{self.__remote}/contexts/"
+            payload = env.to_dict()
+            _log(f"POST {url}")
+            _log(f"POST payload: {payload}")
+            r = requests.post(url, json=payload)
+            _log(f"POST response: {r.status_code} - {r.text[:500] if r.text else 'empty'}")
             if r.status_code != HTTPStatus.CREATED:
                 warnings.warn(f"Cannot insert execution context in remote server (rc={r.status_code}! Deactivating...")
                 self.__remote = ""
             else:
                 remote_id = json.loads(r.text)["h"]
+                _log(f"Got remote context id: {remote_id}")
         self.__eid = db_id, remote_id
+        _log(f"Final env IDs: db={db_id}, remote={remote_id}")
 
     def prepare(self):
         def dummy():
@@ -142,6 +161,7 @@ class PyTestMonitorSession:
         mem_usage,
     ):
         if kind not in self.__scope:
+            _log(f"METRIC SKIPPED (kind={kind} not in scope={self.__scope}): {item}")
             return
         mem_usage = float(mem_usage) - self.__mem_usage_base
         cpu_usage = (user_time + kernel_time) / total_time
@@ -168,26 +188,31 @@ class PyTestMonitorSession:
                 mem_usage,
             )
         if self.__remote and self.remote_env_id is not None:
-            r = requests.post(
-                f"{self.__remote}/metrics/",
-                json={
-                    "session_h": self.__session,
-                    "context_h": self.remote_env_id,
-                    "item_start_time": item_start_time,
-                    "item_path": item_path,
-                    "item": item,
-                    "item_variant": item_variant,
-                    "item_fs_loc": item_loc,
-                    "kind": kind,
-                    "component": final_component,
-                    "total_time": total_time,
-                    "user_time": user_time,
-                    "kernel_time": kernel_time,
-                    "cpu_usage": cpu_usage,
-                    "mem_usage": mem_usage,
-                },
-            )
+            url = f"{self.__remote}/metrics/"
+            payload = {
+                "session_h": self.__session,
+                "context_h": self.remote_env_id,
+                "item_start_time": item_start_time,
+                "item_path": item_path,
+                "item": item,
+                "item_variant": item_variant,
+                "item_fs_loc": item_loc,
+                "kind": kind,
+                "component": final_component,
+                "total_time": total_time,
+                "user_time": user_time,
+                "kernel_time": kernel_time,
+                "cpu_usage": cpu_usage,
+                "mem_usage": mem_usage,
+            }
+            _log(f"POST {url} - {item} (mem={mem_usage:.2f}MB)")
+            r = requests.post(url, json=payload)
             if r.status_code != HTTPStatus.CREATED:
+                _log(f"METRIC FAILED: {r.status_code} - {r.text[:200] if r.text else 'empty'}")
                 self.__remote = ""
                 msg = f"Cannot insert values in remote monitor server ({r.status_code})! Deactivating...')"
                 warnings.warn(msg)
+            else:
+                _log(f"METRIC OK: {item}")
+        elif self.__remote and self.remote_env_id is None:
+            _log(f"METRIC SKIPPED (no remote_env_id): {item}")
